@@ -1,33 +1,52 @@
-#This is the speediest contour tracker with the best performance but bad accuracy because it redoes the center
+"""
+Coagulex - Dual Camera Motion & Temperature Monitor
 
-import serial
-import threading
-import matplotlib.pyplot as plt
+Tracks vertical movement of objects in 1 camera feed while logging
+temperatures from a serial device. Motion is measured in pixels by
+following the topmost point of the largest detected contour and summing
+its y-axis movement over time. 
+
+Features:
+  - Real-time dual video feeds with contour tracking overlays
+  - Temperature plotting and threshold-based motion activation
+  - Pause, reset, and save-to-CSV functionality
+  - Basic smoothing to reduce jitter in distance calculations
+
+Notes:
+  - Distance is in pixels (vertical only)
+  - Tracking uses the topmost contour point, not the center
+  - `reset_tracking` needs to be implemented for full reset support
+"""
+
+# External Libraries
+import serial                        # Handles communication with the microcontroller (e.g., Arduino)
+import threading                     # Enables running serial reading in a parallel thread
+import matplotlib.pyplot as plt     # For plotting temperature data
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import matplotlib.dates as mdates
+import matplotlib.dates as mdates   # For formatting timestamps on X-axis
 from datetime import datetime, timedelta
-import numpy as np
-import cv2 as cv
-import tkinter as tk
-from tkinter import *
-from PIL import Image, ImageTk
+import numpy as np                  # For math operations
+import cv2 as cv                    # OpenCV for image processing and motion tracking
+import tkinter as tk                # Core Tkinter GUI
+from tkinter import *               # Additional Tkinter widget shortcuts
+from PIL import Image, ImageTk      # For displaying OpenCV images in Tkinter
 import time
-from collections import deque
-import ttkbootstrap as ttk
+from collections import deque       # Efficient fixed-length buffers
+import ttkbootstrap as ttk          # Themed Tkinter widgets
 from ttkbootstrap import Style
 from ttkbootstrap.constants import *
 
 class CameraTracker:
-    """Enhanced contour tracker with better performance and accuracy"""
+    """Handles motion tracking using contours in the camera feed."""
     
     def __init__(self, camera_id):
         self.camera_id = camera_id
-        self.template_contour = None
-        self.current_position = None
-        self.prev_position = None
-        self.total_distance = 0
-        self.is_locked = False
+        self.template_contour = None    #Currently tracked contour
+        self.current_position = None    #Current position of the contour
+        self.prev_position = None   #Previous position for distance calculation
+        self.total_distance = 0       #Total distance moved in pixels
+        self.is_locked = False      # True once a contour is locked for tracking
         
         # Performance settings
         self.update_interval = 1  # Update contour every frame
@@ -59,12 +78,14 @@ class CameraTracker:
             
         if self.template_contour is None:
             # First time: pick largest contour
+            # If no template yet, pick the largest valid contour
             return max(valid_contours, key=cv.contourArea)
         
         # Find contour closest to previous position
         best_contour = None
         min_distance = float('inf')
         
+        # Otherwise, find the closest contour to current_position
         for contour in valid_contours:
             top_point = self.get_contour_top_point(contour)
             if top_point and self.current_position:
@@ -80,7 +101,7 @@ class CameraTracker:
         """Process frame with optimized contour detection"""
         self.frame_count += 1
         
-        # Only update contour detection periodically
+        #Only update periodically or until locked onto a contour
         if self.frame_count % self.update_interval == 0 or not self.is_locked:
             gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
             
@@ -126,11 +147,21 @@ class CameraTracker:
         
         if self.current_position:
             cv.circle(frame, self.current_position, 8, (0, 0, 255), -1)
-            
+
+        # Overlay distance info on the frame    
         cv.putText(frame, f"Camera {self.camera_id} - Distance: {self.total_distance:.2f}px",
-                  (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                  (10, 30), cv.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         return frame
+    
+    def reset_tracking(self):
+        """Clear tracking state so contour search restarts and distance resets."""
+        self.template_contour = None
+        self.current_position = None
+        self.prev_position = None
+        self.total_distance = 0
+        self.is_locked = False
+        self.position_buffer.clear()
 
 
 def quantize_grayscale(image, levels=4):
@@ -139,13 +170,15 @@ def quantize_grayscale(image, levels=4):
     quantized = (image // step) * step
     return quantized.astype(np.uint8)
 
+# Utility: Simple binarization
 def binarize_grayscale(image, threshold=180):
     _, binary = cv.threshold(image, threshold, 255, cv.THRESH_BINARY)
     return binary
 
-
+#Coagulex Main Application Class
 class CoagulexApp:
     def __init__(self, root):
+        #Setup window
         self.root = root
         self.root.title("Coagulex - Advanced Temperature & Motion Monitor")
         self.root.geometry("1600x900")  # Fullscreen
@@ -172,7 +205,7 @@ class CoagulexApp:
         self.running = True
         self.monitoring_active = True
 
-        # SOLUTION: Create separate tracker instances for each camera
+        #Creates separate tracker instances for each camera
         self.camera1_tracker = CameraTracker(camera_id=1)
         self.camera2_tracker = CameraTracker(camera_id=2)
 
@@ -181,23 +214,31 @@ class CoagulexApp:
         self.start_serial_monitoring()
         self.start_updates()
 
+    #GUI Layout Initialization
     def setup_ui(self):
         # Configure grid weights
         self.root.grid_rowconfigure(0, weight=1)
-        self.root.grid_columnconfigure(0, weight=2)  # Graph area
-        self.root.grid_columnconfigure(1, weight=2)  # Video area
-        self.root.grid_columnconfigure(2, weight=1)  # Control panel
+        self.root.grid_columnconfigure(0, weight=1, minsize=300)  # Graph area
+        self.root.grid_columnconfigure(1, weight=4)  # Video, Control area
 
         # Graph frame
         self.setup_graph_frame()
 
-        # Video frame  
-        self.setup_video_frame()
+        # Combined video + control panel
+        right_frame = ttk.Frame(self.root, bootstyle="dark", padding=15)
+        right_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=20)
+        right_frame.grid_rowconfigure(0, weight=3)  # video
+        right_frame.grid_rowconfigure(1, weight=1)  # controls
+        right_frame.grid_columnconfigure(0, weight=1)
 
-        # Control panel
-        self.setup_control_panel()
+        # Video subsection
+        self.setup_video_frame(parent=right_frame)
+
+        # Control panel below video
+        self.setup_control_panel(parent=right_frame)
 
     def setup_graph_frame(self):
+        """Initializes the temperature plotting area."""
         graph_frame = ttk.Frame(self.root, bootstyle="dark", padding=15)
         graph_frame.grid(row=0, column=0, sticky="nsew", padx=(20, 10), pady=20)
 
@@ -215,104 +256,74 @@ class CoagulexApp:
 
         # Temperature lines
         self.line1, = self.ax.plot([], [], '-', label="Sensor 1 (°C)", color='#00ffff', linewidth=2)
-        self.line2, = self.ax.plot([], [], '-', label="Sensor 2 (°C)", color='#ff6b6b', linewidth=2)
+        #self.line2, = self.ax.plot([], [], '-', label="Sensor 2 (°C)", color='#ff6b6b', linewidth=2)
         self.ax.legend(facecolor='#2c2c2c', edgecolor='white', labelcolor='white')
 
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
         self.canvas_widget = self.canvas.get_tk_widget()
         self.canvas_widget.pack(fill="both", expand=True)
 
-    def setup_video_frame(self):
-        """Setup video frame with optimized layout for dual feeds"""
-        video_frame = ttk.Frame(self.root, bootstyle="dark", padding=15)
-        video_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=20)
+    def setup_video_frame(self, parent):
+        """Initializes the video feed area with a single camera."""
+        video_frame = ttk.Frame(parent, bootstyle="dark") 
+        video_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
 
-        # Video title
-        ttk.Label(video_frame, text="Live Motion Tracking - Dual Feed", 
+        ttk.Label(video_frame, text="Live Motion Tracking - Camera 1", 
                 bootstyle="info", font=("Segoe UI", 14, "bold")).pack(pady=(0, 10))
 
-        # Container for video feeds
-        video_container = ttk.Frame(video_frame, bootstyle="dark")
-        video_container.pack(fill="both", expand=True)
+        feed_frame = ttk.LabelFrame(video_frame, text="Camera 1", bootstyle="primary")
+        feed_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
-        # Configure container grid weights for equal distribution
-        video_container.grid_rowconfigure(0, weight=1)
-        video_container.grid_rowconfigure(1, weight=1)
-        video_container.grid_columnconfigure(0, weight=1)
-
-        # Video feed 1 with label
-        feed1_frame = ttk.LabelFrame(video_container, text="Camera 1", bootstyle="primary")
-        feed1_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-        
-        self.video_label1 = ttk.Label(feed1_frame, background='#1c1c1c')
+        self.video_label1 = ttk.Label(feed_frame, background='#1c1c1c')
         self.video_label1.pack(fill="both", expand=True, padx=5, pady=5)
 
-        # Video feed 2 with label
-        feed2_frame = ttk.LabelFrame(video_container, text="Camera 2", bootstyle="secondary")
-        feed2_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
-        
-        self.video_label2 = ttk.Label(feed2_frame, background='#1c1c1c')
-        self.video_label2.pack(fill="both", expand=True, padx=5, pady=5)
+    def setup_control_panel(self, parent):
+        """Initializes the control panel with status and buttons."""
+        control_frame = ttk.Frame(parent, bootstyle="dark", padding=(10, 10))
+        control_frame.grid(row=1, column=0, sticky="nsew")
+        control_frame.grid_columnconfigure(0, weight=1)
+        control_frame.grid_columnconfigure(1, weight=1)
 
-    def setup_control_panel(self):
-        control_frame = ttk.Frame(self.root, bootstyle="dark", padding=(20, 30))
-        control_frame.grid(row=0, column=2, sticky="nsew", padx=(10, 20), pady=20)
+        # Status section (compact)
+        status_frame = ttk.LabelFrame(control_frame, text="System Status", bootstyle="info", padding=8)
+        status_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 5))
 
-        # Logo/Icon section
-        try:
-            '''img = Image.open("C:/Python/CoagulexInvert.png").resize((100, 50))
-            self.icon = ImageTk.PhotoImage(img)
-            icon_label = ttk.Label(control_frame, image=self.icon, background=self.style.colors.bg)
-            icon_label.pack(pady=(0, 20))'''
-        except:
-            # Fallback title if no icon
-            ttk.Label(control_frame, text="COAGULEX", 
-                     font=("Helvetica", 20, "bold"), bootstyle="primary").pack(pady=(0, 20))
+        # Temperatures and motion - use smaller font and tighter packing
+        label_kwargs = {"font": ("Segoe UI", 9), "bootstyle": "light"}
+        value_kwargs = {"font": ("Segoe UI", 12, "bold")}
 
-        # Status section
-        status_frame = ttk.LabelFrame(control_frame, text="System Status", bootstyle="info", padding=15)
-        status_frame.pack(fill="x", pady=(0, 20))
+        ttk.Label(status_frame, text="Temp 1:", **label_kwargs).grid(row=0, column=0, sticky="w")
+        self.temp1_val = ttk.Label(status_frame, text="-- °C", bootstyle="success", **value_kwargs)
+        self.temp1_val.grid(row=0, column=1, sticky="e", padx=(5,0))
 
-        ttk.Label(status_frame, text="Temperature Sensor 1:", bootstyle="light", 
-                 font=("Segoe UI", 10)).pack(anchor="w")
-        self.temp1_val = ttk.Label(status_frame, text="-- °C", font=("Segoe UI", 14, "bold"), 
-                                  bootstyle="success")
-        self.temp1_val.pack(anchor="w", pady=(0, 10))
+        #ttk.Label(status_frame, text="Temp 2:", **label_kwargs).grid(row=1, column=0, sticky="w")
+        #self.temp2_val = ttk.Label(status_frame, text="-- °C", bootstyle="warning", **value_kwargs)
+        #self.temp2_val.grid(row=1, column=1, sticky="e", padx=(5,0))
 
-        ttk.Label(status_frame, text="Temperature Sensor 2:", bootstyle="light", 
-                 font=("Segoe UI", 10)).pack(anchor="w")
-        self.temp2_val = ttk.Label(status_frame, text="-- °C", font=("Segoe UI", 14, "bold"), 
-                                  bootstyle="warning")
-        self.temp2_val.pack(anchor="w", pady=(0, 10))
+        ttk.Label(status_frame, text="Cam1:", **label_kwargs).grid(row=2, column=0, sticky="w")
+        self.distance1_val = ttk.Label(status_frame, text="0.00 px", bootstyle="info", **value_kwargs)
+        self.distance1_val.grid(row=2, column=1, sticky="e", padx=(5,0))
 
-        # SOLUTION: Display motion data for both cameras separately
-        ttk.Label(status_frame, text="Camera 1 Motion:", bootstyle="light", 
-                 font=("Segoe UI", 10)).pack(anchor="w")
-        self.distance1_val = ttk.Label(status_frame, text="0.00 px", font=("Segoe UI", 12, "bold"), 
-                                      bootstyle="info")
-        self.distance1_val.pack(anchor="w", pady=(0, 5))
+        #ttk.Label(status_frame, text="Cam2:", **label_kwargs).grid(row=3, column=0, sticky="w")
+        #self.distance2_val = ttk.Label(status_frame, text="0.00 px", bootstyle="info", **value_kwargs)
+        #self.distance2_val.grid(row=3, column=1, sticky="e", padx=(5,0))
 
-        ttk.Label(status_frame, text="Camera 2 Motion:", bootstyle="light", 
-                 font=("Segoe UI", 10)).pack(anchor="w")
-        self.distance2_val = ttk.Label(status_frame, text="0.00 px", font=("Segoe UI", 12, "bold"), 
-                                      bootstyle="info")
-        self.distance2_val.pack(anchor="w")
+        # Controls: buttons in a horizontal row, condensed
+        control_buttons = ttk.Frame(control_frame, bootstyle="dark")
+        control_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2,0))
+        control_buttons.grid_columnconfigure((0,1,2), weight=1, uniform="btn")
 
-        # Control buttons
-        control_buttons = ttk.LabelFrame(control_frame, text="Controls", bootstyle="primary", padding=15)
-        control_buttons.pack(fill="x", pady=(0, 20))
+        self.start_btn = ttk.Button(control_buttons, text="Pause", command=self.toggle_monitoring,
+                                    bootstyle="warning", width=10)
+        self.start_btn.grid(row=0, column=0, padx=2, pady=2, sticky="ew")
 
-        self.start_btn = ttk.Button(control_buttons, text="Pause Monitoring", 
-                                   command=self.toggle_monitoring, bootstyle="warning", width=15)
-        self.start_btn.pack(pady=5, fill="x")
+        self.reset_btn = ttk.Button(control_buttons, text="Reset", command=self.reset_data,
+                                    bootstyle="danger-outline", width=10)
+        self.reset_btn.grid(row=0, column=1, padx=2, pady=2, sticky="ew")
 
-        self.reset_btn = ttk.Button(control_buttons, text="Reset Data", 
-                                   command=self.reset_data, bootstyle="danger-outline", width=15)
-        self.reset_btn.pack(pady=5, fill="x")
-
-        self.save_btn = ttk.Button(control_buttons, text="Save Log", 
-                                  command=self.save_data, bootstyle="success-outline", width=15)
-        self.save_btn.pack(pady=5, fill="x")
+        self.save_btn = ttk.Button(control_buttons, text="Save", command=self.save_data,
+                                    bootstyle="success-outline", width=10)
+        self.save_btn.grid(row=0, column=2, padx=2, pady=2, sticky="ew")
         
     def setup_video(self):
         """Initialize both video capture devices with consistent naming"""
@@ -320,9 +331,9 @@ class CoagulexApp:
         self.vidCap2 = cv.VideoCapture(1)
 
         if not self.vidCap1.isOpened():
-            print("Warning: Could not open webcam 0.")
-        if not self.vidCap2.isOpened():
-            print("Warning: Could not open webcam 1.")
+            print("Warning: Could not open camera.")
+        #if not self.vidCap2.isOpened():
+            #print("Warning: Could not open webcam 1.")
 
     def start_serial_monitoring(self):
         threading.Thread(target=self.serial_reader, daemon=True).start()
@@ -349,7 +360,7 @@ class CoagulexApp:
         except Exception as e:
             print(f"Serial connection error: {e}")
             # Use simulated data if serial fails
-            self.simulate_data()
+            #self.simulate_data()
 
     def parse_serial_line(self, line):
         parts = line.split()
@@ -382,16 +393,16 @@ class CoagulexApp:
                     # Update temperature displays
                     if self.temps and self.temps2:
                         self.temp1_val.config(text=f"{self.temps[-1]:.2f} °C")
-                        self.temp2_val.config(text=f"{self.temps2[-1]:.2f} °C")
+                        #self.temp2_val.config(text=f"{self.temps2[-1]:.2f} °C")
 
-                    # SOLUTION: Update distance displays for both cameras separately
-                    self.distance1_val.config(text=f"{self.camera1_tracker.total_distance:.2f} px")
-                    self.distance2_val.config(text=f"{self.camera2_tracker.total_distance:.2f} px")
+                    #Update distance displays for both cameras separately
+                self.distance1_val.config(text=f"{self.camera1_tracker.total_distance:.2f} px")
+                #self.distance2_val.config(text=f"{self.camera2_tracker.total_distance:.2f} px")
 
         self.root.after(500, self.update_plot)
 
     def update_video(self):
-        """SOLUTION: Update both video feeds with separate tracker processing"""
+        """Update both video feeds with separate tracker processing"""
         # Process first video feed with camera1_tracker
         if hasattr(self, 'vidCap1') and self.vidCap1.isOpened():
             ret1, frame1 = self.vidCap1.read()
@@ -450,6 +461,15 @@ class CoagulexApp:
         else:
             self.start_btn.config(text="Resume Monitoring", bootstyle="success")
 
+    def reset_tracking(self):
+        """Clear tracking state so contour search restarts and distance resets."""
+        self.template_contour = None
+        self.current_position = None
+        self.prev_position = None
+        self.total_distance = 0
+        self.is_locked = False
+        self.position_buffer.clear()
+
     def reset_data(self):
         """SOLUTION: Reset data for both temperature and tracking systems"""
         with self.lock:
@@ -463,9 +483,9 @@ class CoagulexApp:
         
         # Update displays
         self.distance1_val.config(text="0.00 px")
-        self.distance2_val.config(text="0.00 px")
+        #self.distance2_val.config(text="0.00 px")
         self.temp1_val.config(text="-- °C")
-        self.temp2_val.config(text="-- °C")
+        #self.temp2_val.config(text="-- °C")
 
     def save_data(self):
         """SOLUTION: Save data including both camera tracking information"""
