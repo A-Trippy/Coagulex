@@ -36,6 +36,8 @@ from collections import deque       # Efficient fixed-length buffers
 import ttkbootstrap as ttk          # Themed Tkinter widgets
 from ttkbootstrap import Style
 from ttkbootstrap.constants import *
+import os
+import sys
 
 class CameraTracker:
     """Handles motion tracking using contours in the camera feed."""
@@ -181,7 +183,7 @@ class CoagulexApp:
         #Setup window
         self.root = root
         self.root.title("Coagulex - Advanced Temperature & Motion Monitor")
-        self.root.geometry("1600x900")  # Fullscreen
+        self.root.attributes('-fullscreen', True)  # Fullscreen
         self.root.resizable(True, True)
 
         # Premium theme styling
@@ -218,16 +220,16 @@ class CoagulexApp:
     def setup_ui(self):
         # Configure grid weights
         self.root.grid_rowconfigure(0, weight=1)
-        self.root.grid_columnconfigure(0, weight=1, minsize=300)  # Graph area
-        self.root.grid_columnconfigure(1, weight=4)  # Video, Control area
+        self.root.grid_columnconfigure(0, weight=1, minsize=100)  # Graph area
+        self.root.grid_columnconfigure(1, weight=7)  # Video, Control area
 
         # Graph frame
         self.setup_graph_frame()
 
         # Combined video + control panel
-        right_frame = ttk.Frame(self.root, bootstyle="dark", padding=15)
-        right_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=20)
-        right_frame.grid_rowconfigure(0, weight=3)  # video
+        right_frame = ttk.Frame(self.root, bootstyle="dark", padding=(2,2))
+        right_frame.grid(row=0, column=1, sticky="nsew", padx=(2, 2), pady=8)
+        right_frame.grid_rowconfigure(0, weight=5)  # video
         right_frame.grid_rowconfigure(1, weight=1)  # controls
         right_frame.grid_columnconfigure(0, weight=1)
 
@@ -240,13 +242,15 @@ class CoagulexApp:
     def setup_graph_frame(self):
         """Initializes the temperature plotting area."""
         graph_frame = ttk.Frame(self.root, bootstyle="dark", padding=15)
-        graph_frame.grid(row=0, column=0, sticky="nsew", padx=(20, 10), pady=20)
+        graph_frame.grid(row=0, column=0, sticky="nsew", padx=(2,2
+                                                               ), pady=10)
 
         # Create matplotlib figure with dark theme
-        self.fig = Figure(figsize=(8, 6), dpi=100, facecolor='#202020')
+        self.fig = Figure(figsize=(2, 0.5), dpi=100, facecolor='#202020')
         self.ax = self.fig.add_subplot(111)
         self.ax.set_facecolor('#1c1c1c')
         self.ax.tick_params(colors='white')
+        self.fig.subplots_adjust(left=0.24)
         for spine in self.ax.spines.values():
             spine.set_color('white')
         self.ax.set_title("Real-Time Temperature Monitoring", color='white', fontsize=14, fontweight='bold')
@@ -255,7 +259,7 @@ class CoagulexApp:
         self.ax.grid(True, alpha=0.3)
 
         # Temperature lines
-        self.line1, = self.ax.plot([], [], '-', label="Sensor 1 (°C)", color='#00ffff', linewidth=2)
+        self.line1, = self.ax.plot([], [], '-', color='#00ffff', linewidth=2)
         #self.line2, = self.ax.plot([], [], '-', label="Sensor 2 (°C)", color='#ff6b6b', linewidth=2)
         self.ax.legend(facecolor='#2c2c2c', edgecolor='white', labelcolor='white')
 
@@ -266,16 +270,16 @@ class CoagulexApp:
     def setup_video_frame(self, parent):
         """Initializes the video feed area with a single camera."""
         video_frame = ttk.Frame(parent, bootstyle="dark") 
-        video_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+        video_frame.grid(row=0, column=0, sticky="nsew", pady=0)
 
-        ttk.Label(video_frame, text="Live Motion Tracking - Camera 1", 
+        '''ttk.Label(video_frame, text="Live Motion Tracking - Camera 1", 
                 bootstyle="info", font=("Segoe UI", 14, "bold")).pack(pady=(0, 10))
-
+        '''
         feed_frame = ttk.LabelFrame(video_frame, text="Camera 1", bootstyle="primary")
-        feed_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        feed_frame.pack(fill="both", expand=True, padx=5, pady=0)
 
         self.video_label1 = ttk.Label(feed_frame, background='#1c1c1c')
-        self.video_label1.pack(fill="both", expand=True, padx=5, pady=5)
+        self.video_label1.pack(fill="both", expand=True, padx=5, pady=0)
 
     def setup_control_panel(self, parent):
         """Initializes the control panel with status and buttons."""
@@ -285,7 +289,7 @@ class CoagulexApp:
         control_frame.grid_columnconfigure(1, weight=1)
 
         # Status section (compact)
-        status_frame = ttk.LabelFrame(control_frame, text="System Status", bootstyle="info", padding=8)
+        status_frame = ttk.LabelFrame(control_frame, text="System Status", bootstyle="info", padding=3)
         status_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 5))
 
         # Temperatures and motion - use smaller font and tighter packing
@@ -334,6 +338,25 @@ class CoagulexApp:
             print("Warning: Could not open camera.")
         #if not self.vidCap2.isOpened():
             #print("Warning: Could not open webcam 1.")
+    
+    def restart_program(self):
+        """Restarts the entire  script/program from scratch"""
+        #First, release cameras if they exist and are open
+        try:
+            if hasattr(self, 'vidCap1') and self.vidCap1.isOpened():
+                self.vidCap1.release
+            if hasattr(self, 'vidCap2') and self.vidCap2.isOpened():
+                self.vidCap2.release
+        except Exception as e:
+            print(f"Problem releasing camera before restart: {e}")
+
+        try:
+            self.root.destroy()
+        except Exception as e:
+            print(f"Problem destroying root: {e}")
+        
+        python = sys.executable
+        os.execl(python, python, *sys.argv)
 
     def start_serial_monitoring(self):
         threading.Thread(target=self.serial_reader, daemon=True).start()
