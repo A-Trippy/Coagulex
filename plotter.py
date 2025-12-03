@@ -1,1 +1,0 @@
-// Placeholder content for plotter.py in pid_visual_tracker
