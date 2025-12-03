@@ -1,1 +1,0 @@
-// Placeholder content for raspberry_pi_wiring_guide.md in rpi_heater_control
